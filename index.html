@@ -25,7 +25,7 @@
     justify-content: center;
     padding: 24px 12px;
   }
-  main { width: 100%; max-width: 560px; }
+  main { width: 100%; max-width: 800px; }
   h1 {
     font-size: 1.4rem;
     text-align: center;
@@ -45,6 +45,8 @@
     background: var(--panel);
     margin: 0 0 16px;
     padding: 12px 16px 16px;
+    min-width: 0;
+    overflow-x: auto;
   }
   legend {
     color: var(--accent);
@@ -70,9 +72,33 @@
     color: var(--muted);
   }
   .pins select { width: 56px; text-align: center; }
+  .toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 0 0 16px;
+  }
+  .toolbar label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.9rem;
+    color: var(--muted);
+  }
+  #reset {
+    padding: 4px 14px;
+    font-family: inherit;
+    font-size: 0.9rem;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  #reset:hover { border-color: var(--accent-dark); color: var(--accent); }
   table { border-collapse: collapse; margin: 0 auto; }
   th, td { padding: 3px; text-align: center; }
-  th { color: var(--muted); font-weight: normal; font-size: 0.85rem; }
+  th { color: var(--muted); font-weight: normal; font-size: 0.85rem; white-space: nowrap; }
   .diag { color: var(--muted); }
   .hint { color: var(--muted); font-size: 0.8rem; margin: 10px 0 0; text-align: center; }
   #solve {
@@ -102,7 +128,12 @@
 <body>
 <main>
   <h1>Gothic 1 Remake — Lockpick Solver</h1>
-  <p class="subtitle">Shortest movement sequence to reach [4, 4, 4, 4, 4]. l: value +1, r: value &minus;1.</p>
+  <p class="subtitle">Shortest movement sequence to set every plate to 4. l: value +1, r: value &minus;1.</p>
+
+  <div class="toolbar">
+    <label>Plates <select id="plates"></select></label>
+    <button id="reset" type="button">Reset</button>
+  </div>
 
   <fieldset>
     <legend>Starting position</legend>
@@ -127,8 +158,15 @@
 'use strict';
 
 const SLOTS = 7;
-const PLATES = 5;
-const TARGET = [4, 4, 4, 4, 4];
+const TARGET_PIN = 4;
+const PLATE_CHOICES = [5, 6, 7];
+const DEFAULT_PLATES = 5;
+
+let plates = DEFAULT_PLATES;
+
+function targetPosition() {
+  return new Array(plates).fill(TARGET_PIN);
+}
 
 function positionToIndex(position) {
   let index = 0;
@@ -137,8 +175,8 @@ function positionToIndex(position) {
 }
 
 function indexToPosition(index) {
-  const position = new Array(PLATES);
-  for (let i = PLATES - 1; i >= 0; i--) {
+  const position = new Array(plates);
+  for (let i = plates - 1; i >= 0; i--) {
     position[i] = index % SLOTS + 1;
     index = Math.floor(index / SLOTS);
   }
@@ -159,8 +197,8 @@ function applyMovement(position, plate, change, connections) {
 // solved, or null if the target is unreachable.
 function solve(start, connections) {
   const startIndex = positionToIndex(start);
-  const targetIndex = positionToIndex(TARGET);
-  const total = SLOTS ** PLATES;
+  const targetIndex = positionToIndex(targetPosition());
+  const total = SLOTS ** plates;
 
   const visited = new Uint8Array(total);
   const prev = new Int32Array(total);
@@ -172,7 +210,7 @@ function solve(start, connections) {
     const v = queue[head];
     if (v === targetIndex) break;
     const position = indexToPosition(v);
-    for (let plate = 0; plate < PLATES; plate++) {
+    for (let plate = 0; plate < plates; plate++) {
       for (const change of [1, -1]) {
         const nextPosition = applyMovement(position, plate, change, connections);
         if (nextPosition === null) continue;
@@ -203,49 +241,89 @@ function solve(start, connections) {
 
 // --- UI ---
 
-const pinSelects = [];
 const pinsDiv = document.getElementById('pins');
-for (let plate = 0; plate < PLATES; plate++) {
-  const label = document.createElement('label');
-  label.append(`Plate ${plate + 1}`);
-  const select = document.createElement('select');
-  for (let value = 1; value <= SLOTS; value++) {
-    select.add(new Option(value, value));
+const matrix = document.getElementById('matrix');
+const output = document.getElementById('output');
+
+let pinSelects = [];
+let matrixSelects = new Map(); // "src,dst" -> select
+
+// oldValues: plate index -> previous pin value, kept where it still fits
+function buildPins(oldValues = []) {
+  pinsDiv.innerHTML = '';
+  pinSelects = [];
+  for (let plate = 0; plate < plates; plate++) {
+    const label = document.createElement('label');
+    label.append(`Plate ${plate + 1}`);
+    const select = document.createElement('select');
+    for (let value = 1; value <= SLOTS; value++) {
+      select.add(new Option(value, value));
+    }
+    select.value = oldValues[plate] ?? TARGET_PIN;
+    label.append(select);
+    pinsDiv.append(label);
+    pinSelects.push(select);
   }
-  select.value = TARGET[plate];
-  label.append(select);
-  pinsDiv.append(label);
-  pinSelects.push(select);
 }
 
-const matrixSelects = new Map(); // "src,dst" -> select
-const matrix = document.getElementById('matrix');
-const header = matrix.insertRow();
-header.insertCell().outerHTML = '<th>moves \\ affects</th>';
-for (let plate = 0; plate < PLATES; plate++) {
-  header.insertCell().outerHTML = `<th>${plate + 1}</th>`;
-}
-for (let src = 0; src < PLATES; src++) {
-  const row = matrix.insertRow();
-  row.insertCell().outerHTML = `<th>${src + 1}</th>`;
-  for (let dst = 0; dst < PLATES; dst++) {
-    const cell = row.insertCell();
-    if (src === dst) {
-      cell.textContent = '—';
-      cell.className = 'diag';
-      continue;
+// oldValues: "src,dst" -> previous direction, kept where it still fits
+function buildMatrix(oldValues = new Map()) {
+  matrix.innerHTML = '';
+  matrixSelects = new Map();
+  const header = matrix.insertRow();
+  header.insertCell().outerHTML = '<th>moves \\ affects</th>';
+  for (let plate = 0; plate < plates; plate++) {
+    header.insertCell().outerHTML = `<th>${plate + 1}</th>`;
+  }
+  for (let src = 0; src < plates; src++) {
+    const row = matrix.insertRow();
+    row.insertCell().outerHTML = `<th>${src + 1}</th>`;
+    for (let dst = 0; dst < plates; dst++) {
+      const cell = row.insertCell();
+      if (src === dst) {
+        cell.textContent = '—';
+        cell.className = 'diag';
+        continue;
+      }
+      const select = document.createElement('select');
+      for (const option of ['none', 'same', 'opposite']) {
+        select.add(new Option(option, option));
+      }
+      select.value = oldValues.get(`${src},${dst}`) ?? 'none';
+      cell.append(select);
+      matrixSelects.set(`${src},${dst}`, select);
     }
-    const select = document.createElement('select');
-    for (const option of ['none', 'same', 'opposite']) {
-      select.add(new Option(option, option));
-    }
-    cell.append(select);
-    matrixSelects.set(`${src},${dst}`, select);
   }
 }
+
+const plateSelect = document.getElementById('plates');
+for (const choice of PLATE_CHOICES) {
+  plateSelect.add(new Option(choice, choice));
+}
+plateSelect.value = DEFAULT_PLATES;
+plateSelect.addEventListener('change', () => {
+  const oldPins = pinSelects.map(select => Number(select.value));
+  const oldMatrix = new Map(
+    Array.from(matrixSelects, ([key, select]) => [key, select.value])
+  );
+  plates = Number(plateSelect.value);
+  buildPins(oldPins);
+  buildMatrix(oldMatrix);
+});
+
+document.getElementById('reset').addEventListener('click', () => {
+  plates = DEFAULT_PLATES;
+  plateSelect.value = DEFAULT_PLATES;
+  buildPins();
+  buildMatrix();
+  output.textContent = '';
+});
+
+buildPins();
+buildMatrix();
 
 function readConnections() {
-  const connections = Array.from({length: PLATES}, () => []);
+  const connections = Array.from({length: plates}, () => []);
   for (const [key, select] of matrixSelects) {
     if (select.value === 'none') continue;
     const [src, dst] = key.split(',').map(Number);
@@ -254,7 +332,6 @@ function readConnections() {
   return connections;
 }
 
-const output = document.getElementById('output');
 document.getElementById('solve').addEventListener('click', () => {
   const start = pinSelects.map(select => Number(select.value));
   const path = solve(start, readConnections());

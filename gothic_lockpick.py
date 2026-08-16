@@ -3,27 +3,33 @@
 Graph vertices are all positions (tuples of pin values, one per plate, each
 within [1, SLOTS]). An edge p1 -> p2 exists if there is a Movement
 (plate, side) that turns p1 into p2, taking plate connections into account.
+The graph is never materialized: BFS generates neighbors on the fly and
+stops as soon as the target is reached.
 
 Direction convention: side 'l' increases the plate value by 1, side 'r'
 decreases it. A 'same' connection moves the dependent plate in the same
 direction, 'opposite' — in the opposite one.
+
+The number of plates is variable and is inferred from the --start values.
 
 Example:
     python gothic_lockpick.py --start 3 5 2 4 1 --conn 1:3:same --conn 2:5:opposite
 """
 
 import argparse
-import heapq
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
-from itertools import product
 from typing import Optional
 
 SLOTS = 7
-PLATES = 5
-TARGET = (4,) * PLATES
+TARGET_PIN = 4
 
 Position = tuple[int, ...]
+
+
+def target_position(plates: int) -> Position:
+    return (TARGET_PIN,) * plates
 
 
 class Direction(Enum):
@@ -38,36 +44,14 @@ class Side(Enum):
 
 @dataclass(frozen=True)
 class Connection:
-    plate: int  # dependent plate index (0-based)
+    plate: int  # 0-based
     direction: Direction
 
 
 @dataclass(frozen=True)
 class Movement:
-    plate: int  # moved plate index (0-based)
+    plate: int  # 0-based
     side: Side
-
-
-@dataclass(frozen=True)
-class Edge:
-    next: int
-    move: Movement
-
-
-Edges = list[list[Edge]]
-
-
-def fill_vertices() -> list[Position]:
-    return list(product(range(1, SLOTS + 1), repeat=PLATES))
-
-
-def position_to_index(position: Position) -> int:
-    """Index of the position in vertices: a position is a base-SLOTS number
-    whose digits are (pin - 1)."""
-    index = 0
-    for pin in position:
-        index = index * SLOTS + (pin - 1)
-    return index
 
 
 def apply_movement(
@@ -86,52 +70,56 @@ def apply_movement(
     return None
 
 
-def fill_edges(
-    vertices: list[Position],
+def move_deltas(
+    plates: int,
     connections: list[list[Connection]],
-) -> Edges:
-    edges: Edges = []
-    for v_pos in vertices:
-        out: list[Edge] = []
-        for plate in range(PLATES):
-            for side in Side:
-                move = Movement(plate=plate, side=side)
-                next_pos = apply_movement(v_pos, move, connections)
-                if next_pos is not None:
-                    out.append(Edge(next=position_to_index(next_pos), move=move))
-        edges.append(out)
-    return edges
+) -> list[tuple[Movement, tuple[int, ...]]]:
+    """Every possible movement paired with the pin change it causes on each
+    plate (the moved plate itself plus its connections)."""
+    moves: list[tuple[Movement, tuple[int, ...]]] = []
+    for plate in range(plates):
+        for side in Side:
+            change = 1 if side is Side.LEFT else -1
+            deltas = [0] * plates
+            deltas[plate] += change
+            for c in connections[plate]:
+                deltas[c.plate] += change * (1 if c.direction is Direction.SAME else -1)
+            moves.append((Movement(plate=plate, side=side), tuple(deltas)))
+    return moves
 
 
-def run_dijkstra(edges: Edges, start: int, target: int) -> Optional[list[Movement]]:
-    INF = float('inf')
-    dist = [INF] * len(edges)
-    prev: list[Optional[tuple[int, Movement]]] = [None] * len(edges)
-    dist[start] = 0
-    heap: list[tuple[int, int]] = [(0, start)]
+def solve(
+    start: Position,
+    target: Position,
+    connections: list[list[Connection]],
+) -> Optional[list[Movement]]:
+    """Shortest movement sequence from start to target (BFS: every movement
+    costs 1). Returns [] if already solved, None if unreachable."""
+    moves = move_deltas(len(start), connections)
+    prev: dict[Position, Optional[tuple[Position, Movement]]] = {start: None}
+    queue = deque([start])
 
-    while heap:
-        d, v = heapq.heappop(heap)
-        if d > dist[v]:
-            continue
-        if v == target:
+    while queue:
+        position = queue.popleft()
+        if position == target:
             break
-        for edge in edges[v]:
-            nd = d + 1  # every movement costs 1
-            if nd < dist[edge.next]:
-                dist[edge.next] = nd
-                prev[edge.next] = (v, edge.move)
-                heapq.heappush(heap, (nd, edge.next))
+        for move, deltas in moves:
+            next_position = tuple(pin + d for pin, d in zip(position, deltas))
+            if (
+                next_position not in prev
+                and min(next_position) >= 1
+                and max(next_position) <= SLOTS
+            ):
+                prev[next_position] = (position, move)
+                queue.append(next_position)
 
-    if dist[target] == INF:
+    if target not in prev:
         return None
 
     path: list[Movement] = []
-    v = target
-    while v != start:
-        step = prev[v]
-        assert step is not None
-        v, move = step
+    position = target
+    while (step := prev[position]) is not None:
+        position, move = step
         path.append(move)
     path.reverse()
     return path
@@ -145,8 +133,9 @@ def parse_args() -> argparse.Namespace:
                "in the same direction).",
     )
     parser.add_argument(
-        '--start', type=int, nargs=PLATES, required=True, metavar='PIN',
-        help=f'starting position: {PLATES} values from 1 to {SLOTS}',
+        '--start', type=int, nargs='+', required=True, metavar='PIN',
+        help=f'starting position: one value from 1 to {SLOTS} per plate. '
+             'The number of plates is inferred from the count',
     )
     parser.add_argument(
         '--conn', action='append', default=[], metavar='A:B:DIR',
@@ -155,8 +144,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def parse_connections(raw: list[str]) -> list[list[Connection]]:
-    connections: list[list[Connection]] = [[] for _ in range(PLATES)]
+def parse_connections(raw: list[str], plates: int) -> list[list[Connection]]:
+    connections: list[list[Connection]] = [[] for _ in range(plates)]
     for item in raw:
         parts = item.split(':')
         if len(parts) != 3:
@@ -166,8 +155,8 @@ def parse_connections(raw: list[str]) -> list[list[Connection]]:
             src, dst = int(src_s), int(dst_s)
         except ValueError:
             raise SystemExit(f'Invalid connection format: {item!r} (plate numbers must be integers)')
-        if not (1 <= src <= PLATES and 1 <= dst <= PLATES):
-            raise SystemExit(f'Plate numbers in {item!r} must be from 1 to {PLATES}')
+        if not (1 <= src <= plates and 1 <= dst <= plates):
+            raise SystemExit(f'Plate numbers in {item!r} must be from 1 to {plates}')
         if src == dst:
             raise SystemExit(f'A plate cannot be connected to itself: {item!r}')
         try:
@@ -185,12 +174,10 @@ def main() -> None:
         if not (1 <= pin <= SLOTS):
             raise SystemExit(f'Pin value {pin} is out of range [1, {SLOTS}]')
     start_position: Position = tuple(args.start)
-    connections = parse_connections(args.conn)
+    plates = len(start_position)
+    connections = parse_connections(args.conn, plates)
 
-    vertices = fill_vertices()
-    edges = fill_edges(vertices, connections)
-
-    path = run_dijkstra(edges, position_to_index(start_position), position_to_index(TARGET))
+    path = solve(start_position, target_position(plates), connections)
 
     if path is None:
         print('No solution: the target position is unreachable from the start.')

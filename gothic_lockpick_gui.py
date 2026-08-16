@@ -8,18 +8,18 @@ import tkinter as tk
 from tkinter import ttk
 
 from gothic_lockpick import (
-    PLATES,
     SLOTS,
-    TARGET,
+    TARGET_PIN,
     Connection,
     Direction,
     Side,
     apply_movement,
-    fill_edges,
-    fill_vertices,
-    position_to_index,
-    run_dijkstra,
+    solve,
+    target_position,
 )
+
+PLATE_CHOICES = (5, 6, 7)
+DEFAULT_PLATES = 5
 
 
 class ConnectionMatrix:
@@ -29,22 +29,29 @@ class ConnectionMatrix:
     NONE = 'none'
     OPTIONS = [NONE, Direction.SAME.value, Direction.OPPOSITE.value]
 
-    def __init__(self, parent: ttk.Frame) -> None:
+    def __init__(
+        self,
+        parent: ttk.Frame,
+        plates: int,
+        initial: dict[tuple[int, int], str] | None = None,
+    ) -> None:
+        initial = initial or {}
+        self.plates = plates
         self.vars: dict[tuple[int, int], tk.StringVar] = {}
 
         grid = ttk.Frame(parent)
         grid.pack(anchor=tk.W)
         ttk.Label(grid, text='moves \\ affects').grid(row=0, column=0, padx=(0, 6))
-        for plate in range(PLATES):
+        for plate in range(plates):
             ttk.Label(grid, text=str(plate + 1)).grid(row=0, column=plate + 1)
             ttk.Label(grid, text=str(plate + 1)).grid(row=plate + 1, column=0, sticky=tk.E, padx=(0, 6))
 
-        for src in range(PLATES):
-            for dst in range(PLATES):
+        for src in range(plates):
+            for dst in range(plates):
                 if src == dst:
                     ttk.Label(grid, text='—').grid(row=src + 1, column=dst + 1)
                     continue
-                var = tk.StringVar(value=self.NONE)
+                var = tk.StringVar(value=initial.get((src, dst), self.NONE))
                 combo = ttk.Combobox(
                     grid, textvariable=var, values=self.OPTIONS,
                     width=8, state='readonly',
@@ -57,8 +64,11 @@ class ConnectionMatrix:
             text='Row = plate you move, column = plate that follows.',
         ).pack(anchor=tk.W, pady=(6, 0))
 
+    def values(self) -> dict[tuple[int, int], str]:
+        return {key: var.get() for key, var in self.vars.items()}
+
     def connections(self) -> list[list[Connection]]:
-        connections: list[list[Connection]] = [[] for _ in range(PLATES)]
+        connections: list[list[Connection]] = [[] for _ in range(self.plates)]
         for (src, dst), var in self.vars.items():
             if var.get() != self.NONE:
                 connections[src].append(Connection(plate=dst, direction=Direction(var.get())))
@@ -71,20 +81,60 @@ class App:
         root.title('Gothic 1 Remake — Lockpick Solver')
         root.resizable(False, False)
 
-        self.vertices = fill_vertices()
-        self.edges_cache: dict[tuple, list] = {}
-
         main = ttk.Frame(root, padding=10)
         main.pack(fill=tk.BOTH, expand=True)
 
-        start_frame = ttk.LabelFrame(main, text='Starting position', padding=8)
-        start_frame.pack(fill=tk.X)
+        top = ttk.Frame(main)
+        top.pack(fill=tk.X)
+        ttk.Label(top, text='Plates:').pack(side=tk.LEFT)
+        self.plate_var = tk.IntVar(value=DEFAULT_PLATES)
+        plate_combo = ttk.Combobox(
+            top, textvariable=self.plate_var, values=PLATE_CHOICES,
+            width=4, state='readonly',
+        )
+        plate_combo.pack(side=tk.LEFT, padx=(4, 0))
+        plate_combo.bind('<<ComboboxSelected>>', lambda _event: self.rebuild_inputs())
+        ttk.Button(top, text='Reset', command=self.reset).pack(side=tk.RIGHT)
+
+        self.start_frame = ttk.LabelFrame(main, text='Starting position', padding=8)
+        self.start_frame.pack(fill=tk.X, pady=(8, 0))
+        self.conn_frame = ttk.LabelFrame(main, text='Plate connections', padding=8)
+        self.conn_frame.pack(fill=tk.X, pady=(8, 0))
+
         self.pins: list[tk.IntVar] = []
-        for plate in range(PLATES):
-            column = ttk.Frame(start_frame)
+        self.matrix: ConnectionMatrix
+        self.build_inputs()
+
+        ttk.Button(main, text='Solve', command=self.on_solve).pack(fill=tk.X, pady=(8, 0))
+
+        out_frame = ttk.LabelFrame(main, text='Solution', padding=8)
+        out_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        self.output = tk.Text(
+            out_frame, width=52, height=16, state=tk.DISABLED,
+            font=('Consolas', 10),
+        )
+        self.output.pack(fill=tk.BOTH, expand=True)
+
+    def build_inputs(
+        self,
+        pin_values: dict[int, int] | None = None,
+        matrix_values: dict[tuple[int, int], str] | None = None,
+    ) -> None:
+        """(Re)create the pin spinboxes and the connection matrix for the
+        current plate count, keeping the passed-in values where they fit."""
+        pin_values = pin_values or {}
+        plates = self.plate_var.get()
+
+        for frame in (self.start_frame, self.conn_frame):
+            for child in frame.winfo_children():
+                child.destroy()
+
+        self.pins = []
+        for plate in range(plates):
+            column = ttk.Frame(self.start_frame)
             column.pack(side=tk.LEFT, expand=True)
             ttk.Label(column, text=f'Plate {plate + 1}').pack()
-            var = tk.IntVar(value=TARGET[plate])
+            var = tk.IntVar(value=pin_values.get(plate, TARGET_PIN))
             spin = ttk.Spinbox(
                 column, from_=1, to=SLOTS, textvariable=var,
                 width=4, state='readonly',
@@ -92,35 +142,27 @@ class App:
             spin.pack(padx=4)
             self.pins.append(var)
 
-        conn_frame = ttk.LabelFrame(main, text='Plate connections', padding=8)
-        conn_frame.pack(fill=tk.X, pady=(8, 0))
-        self.matrix = ConnectionMatrix(conn_frame)
+        self.matrix = ConnectionMatrix(self.conn_frame, plates, matrix_values)
 
-        ttk.Button(main, text='Solve', command=self.solve).pack(fill=tk.X, pady=(8, 0))
-
-        out_frame = ttk.LabelFrame(main, text='Solution', padding=8)
-        out_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
-        self.output = tk.Text(
-            out_frame, width=44, height=16, state=tk.DISABLED,
-            font=('Consolas', 10),
+    def rebuild_inputs(self) -> None:
+        """Plate count changed: rebuild inputs, preserving current values."""
+        self.build_inputs(
+            pin_values={i: var.get() for i, var in enumerate(self.pins)},
+            matrix_values=self.matrix.values(),
         )
-        self.output.pack(fill=tk.BOTH, expand=True)
 
-    def get_edges(self, connections: list[list[Connection]]) -> list:
-        key = tuple(
-            (src, c.plate, c.direction)
-            for src in range(PLATES)
-            for c in connections[src]
-        )
-        if key not in self.edges_cache:
-            self.edges_cache[key] = fill_edges(self.vertices, connections)
-        return self.edges_cache[key]
+    def reset(self) -> None:
+        self.plate_var.set(DEFAULT_PLATES)
+        self.build_inputs()
+        self.show('')
 
-    def solve(self) -> None:
+    def on_solve(self) -> None:
+        plates = self.plate_var.get()
         connections = self.matrix.connections()
         start = tuple(var.get() for var in self.pins)
-        edges = self.get_edges(connections)
-        path = run_dijkstra(edges, position_to_index(start), position_to_index(TARGET))
+        self.show('Solving…')
+        self.root.update_idletasks()
+        path = solve(start, target_position(plates), connections)
 
         if path is None:
             self.show('No solution: the target position is\nunreachable from the start.')
