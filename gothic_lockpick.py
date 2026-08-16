@@ -1,20 +1,19 @@
-"""Подборщик комбинаций для взлома замков в Gothic 1 Remake.
+"""Lockpick combination solver for Gothic 1 Remake.
 
-Вершины графа — все позиции (наборы значений пинов, по одному на пластину,
-каждое в отрезке [1, SLOTS]). Ребро p1 -> p2 существует, если есть Movement
-(plate, side), переводящий p1 в p2 с учётом связей пластин.
+Graph vertices are all positions (tuples of pin values, one per plate, each
+within [1, SLOTS]). An edge p1 -> p2 exists if there is a Movement
+(plate, side) that turns p1 into p2, taking plate connections into account.
 
-Соглашение о направлениях: side 'l' увеличивает значение пластины на 1,
-side 'r' — уменьшает. Связь 'same' двигает зависимую пластину в ту же сторону,
-'opposite' — в противоположную.
+Direction convention: side 'l' increases the plate value by 1, side 'r'
+decreases it. A 'same' connection moves the dependent plate in the same
+direction, 'opposite' — in the opposite one.
 
-Пример запуска:
+Example:
     python gothic_lockpick.py --start 3 5 2 4 1 --conn 1:3:same --conn 2:5:opposite
 """
 
 import argparse
 import heapq
-import sys
 from dataclasses import dataclass
 from enum import Enum
 from itertools import product
@@ -39,13 +38,13 @@ class Side(Enum):
 
 @dataclass(frozen=True)
 class Connection:
-    plate: int  # индекс зависимой пластины (0-based)
+    plate: int  # dependent plate index (0-based)
     direction: Direction
 
 
 @dataclass(frozen=True)
 class Movement:
-    plate: int  # индекс двигаемой пластины (0-based)
+    plate: int  # moved plate index (0-based)
     side: Side
 
 
@@ -63,8 +62,8 @@ def fill_vertices() -> list[Position]:
 
 
 def position_to_index(position: Position) -> int:
-    """Номер позиции в vertices: позиция — это число в системе счисления
-    с основанием SLOTS, где цифры — (pin - 1)."""
+    """Index of the position in vertices: a position is a base-SLOTS number
+    whose digits are (pin - 1)."""
     index = 0
     for pin in position:
         index = index * SLOTS + (pin - 1)
@@ -118,7 +117,7 @@ def run_dijkstra(edges: Edges, start: int, target: int) -> Optional[list[Movemen
         if v == target:
             break
         for edge in edges[v]:
-            nd = d + 1  # каждое движение стоит 1
+            nd = d + 1  # every movement costs 1
             if nd < dist[edge.next]:
                 dist[edge.next] = nd
                 prev[edge.next] = (v, edge.move)
@@ -140,18 +139,18 @@ def run_dijkstra(edges: Edges, start: int, target: int) -> Optional[list[Movemen
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description='Поиск кратчайшей последовательности движений для взлома замка.',
-        epilog="Пластины в аргументах нумеруются с 1. "
-               "Формат связи: КТО:КОГО:same|opposite, например --conn 1:3:same "
-               "(движение пластины 1 двигает пластину 3 в ту же сторону).",
+        description='Find the shortest movement sequence that opens the lock.',
+        epilog="Plates are 1-indexed. Connection format: WHO:WHOM:same|opposite, "
+               "e.g. --conn 1:3:same (moving plate 1 also moves plate 3 "
+               "in the same direction).",
     )
     parser.add_argument(
         '--start', type=int, nargs=PLATES, required=True, metavar='PIN',
-        help=f'начальная позиция: {PLATES} значений от 1 до {SLOTS}',
+        help=f'starting position: {PLATES} values from 1 to {SLOTS}',
     )
     parser.add_argument(
         '--conn', action='append', default=[], metavar='A:B:DIR',
-        help='связь пластин (можно указывать несколько раз)',
+        help='plate connection (may be given multiple times)',
     )
     return parser.parse_args()
 
@@ -161,34 +160,30 @@ def parse_connections(raw: list[str]) -> list[list[Connection]]:
     for item in raw:
         parts = item.split(':')
         if len(parts) != 3:
-            raise SystemExit(f'Неверный формат связи: {item!r} (ожидается A:B:same|opposite)')
+            raise SystemExit(f'Invalid connection format: {item!r} (expected A:B:same|opposite)')
         src_s, dst_s, direction = parts
         try:
             src, dst = int(src_s), int(dst_s)
         except ValueError:
-            raise SystemExit(f'Неверный формат связи: {item!r} (номера пластин должны быть числами)')
+            raise SystemExit(f'Invalid connection format: {item!r} (plate numbers must be integers)')
         if not (1 <= src <= PLATES and 1 <= dst <= PLATES):
-            raise SystemExit(f'Номера пластин в {item!r} должны быть от 1 до {PLATES}')
+            raise SystemExit(f'Plate numbers in {item!r} must be from 1 to {PLATES}')
         if src == dst:
-            raise SystemExit(f'Пластина не может быть связана сама с собой: {item!r}')
+            raise SystemExit(f'A plate cannot be connected to itself: {item!r}')
         try:
             parsed_direction = Direction(direction)
         except ValueError:
-            raise SystemExit(f'Направление связи в {item!r} должно быть same или opposite')
+            raise SystemExit(f'Connection direction in {item!r} must be same or opposite')
         connections[src - 1].append(Connection(plate=dst - 1, direction=parsed_direction))
     return connections
 
 
 def main() -> None:
-    # Windows-консоль может использовать cp1252/cp866 — кириллица в них не печатается
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
-
     args = parse_args()
 
     for pin in args.start:
         if not (1 <= pin <= SLOTS):
-            raise SystemExit(f'Значение пина {pin} вне отрезка [1, {SLOTS}]')
+            raise SystemExit(f'Pin value {pin} is out of range [1, {SLOTS}]')
     start_position: Position = tuple(args.start)
     connections = parse_connections(args.conn)
 
@@ -198,20 +193,20 @@ def main() -> None:
     path = run_dijkstra(edges, position_to_index(start_position), position_to_index(TARGET))
 
     if path is None:
-        print('Решения нет: целевая позиция недостижима из начальной.')
+        print('No solution: the target position is unreachable from the start.')
         raise SystemExit(1)
 
     if not path:
-        print('Замок уже открыт: начальная позиция совпадает с целевой.')
+        print('The lock is already open: the starting position is the target.')
         return
 
-    print(f'Решение за {len(path)} движений (l: значение +1, r: значение -1):')
+    print(f'Solution in {len(path)} movements (l: value +1, r: value -1):')
     position = start_position
     for i, move in enumerate(path, 1):
         next_position = apply_movement(position, move, connections)
         assert next_position is not None
-        side_name = 'влево (l)' if move.side is Side.LEFT else 'вправо (r)'
-        print(f'{i:3}. пластина {move.plate + 1} {side_name}  ->  {list(next_position)}')
+        side_name = 'left (l)' if move.side is Side.LEFT else 'right (r)'
+        print(f'{i:3}. plate {move.plate + 1} {side_name}  ->  {list(next_position)}')
         position = next_position
 
 
