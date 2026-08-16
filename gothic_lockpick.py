@@ -58,11 +58,17 @@ class Edge:
 Edges = list[list[Edge]]
 
 
-def fill_vertices() -> tuple[list[Position], dict[Position, int]]:
-    """Все позиции и обратный индекс позиция -> номер вершины."""
-    vertices = [v for v in product(range(1, SLOTS + 1), repeat=PLATES)]
-    index = {v: i for i, v in enumerate(vertices)}
-    return vertices, index
+def fill_vertices() -> list[Position]:
+    return list(product(range(1, SLOTS + 1), repeat=PLATES))
+
+
+def position_to_index(position: Position) -> int:
+    """Номер позиции в vertices: позиция — это число в системе счисления
+    с основанием SLOTS, где цифры — (pin - 1)."""
+    index = 0
+    for pin in position:
+        index = index * SLOTS + (pin - 1)
+    return index
 
 
 def apply_movement(
@@ -70,7 +76,6 @@ def apply_movement(
     move: Movement,
     connections: list[list[Connection]],
 ) -> Optional[Position]:
-    """Позиция после движения, либо None, если какой-то пин выходит за [1, SLOTS]."""
     result = list(position)
     change = 1 if move.side is Side.LEFT else -1
     result[move.plate] += change
@@ -84,7 +89,6 @@ def apply_movement(
 
 def fill_edges(
     vertices: list[Position],
-    index: dict[Position, int],
     connections: list[list[Connection]],
 ) -> Edges:
     edges: Edges = []
@@ -95,13 +99,12 @@ def fill_edges(
                 move = Movement(plate=plate, side=side)
                 next_pos = apply_movement(v_pos, move, connections)
                 if next_pos is not None:
-                    out.append(Edge(next=index[next_pos], move=move))
+                    out.append(Edge(next=position_to_index(next_pos), move=move))
         edges.append(out)
     return edges
 
 
 def run_dijkstra(edges: Edges, start: int, target: int) -> Optional[list[Movement]]:
-    """Кратчайший путь start -> target; список движений, либо None, если пути нет."""
     INF = float('inf')
     dist = [INF] * len(edges)
     prev: list[Optional[tuple[int, Movement]]] = [None] * len(edges)
@@ -189,10 +192,10 @@ def main() -> None:
     start_position: Position = tuple(args.start)
     connections = parse_connections(args.conn)
 
-    vertices, index = fill_vertices()
-    edges = fill_edges(vertices, index, connections)
+    vertices = fill_vertices()
+    edges = fill_edges(vertices, connections)
 
-    path = run_dijkstra(edges, index[start_position], index[TARGET])
+    path = run_dijkstra(edges, position_to_index(start_position), position_to_index(TARGET))
 
     if path is None:
         print('Решения нет: целевая позиция недостижима из начальной.')
