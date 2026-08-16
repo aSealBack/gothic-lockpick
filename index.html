@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gothic 1 Remake — Lockpick Solver</title>
+<style>
+  :root {
+    --bg: #1a1712;
+    --panel: #26221a;
+    --border: #4a4132;
+    --text: #d8cdb4;
+    --muted: #8d8168;
+    --accent: #c9a227;
+    --accent-dark: #8a6f1c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: Georgia, 'Times New Roman', serif;
+    display: flex;
+    justify-content: center;
+    padding: 24px 12px;
+  }
+  main { width: 100%; max-width: 560px; }
+  h1 {
+    font-size: 1.4rem;
+    text-align: center;
+    color: var(--accent);
+    letter-spacing: 0.06em;
+    margin: 0 0 4px;
+  }
+  .subtitle {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.85rem;
+    margin: 0 0 20px;
+  }
+  fieldset {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    margin: 0 0 16px;
+    padding: 12px 16px 16px;
+  }
+  legend {
+    color: var(--accent);
+    padding: 0 8px;
+    font-size: 0.95rem;
+  }
+  select {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-family: inherit;
+    font-size: 0.9rem;
+  }
+  .pins { display: flex; gap: 12px; justify-content: space-between; }
+  .pins label {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .pins select { width: 56px; text-align: center; }
+  table { border-collapse: collapse; margin: 0 auto; }
+  th, td { padding: 3px; text-align: center; }
+  th { color: var(--muted); font-weight: normal; font-size: 0.85rem; }
+  .diag { color: var(--muted); }
+  .hint { color: var(--muted); font-size: 0.8rem; margin: 10px 0 0; text-align: center; }
+  #solve {
+    width: 100%;
+    padding: 10px;
+    font-family: inherit;
+    font-size: 1.05rem;
+    letter-spacing: 0.08em;
+    color: var(--bg);
+    background: linear-gradient(var(--accent), var(--accent-dark));
+    border: 1px solid var(--accent-dark);
+    border-radius: 6px;
+    cursor: pointer;
+    margin-bottom: 16px;
+  }
+  #solve:hover { filter: brightness(1.1); }
+  #output {
+    font-family: Consolas, Menlo, monospace;
+    font-size: 0.9rem;
+    white-space: pre;
+    overflow-x: auto;
+    min-height: 3em;
+    margin: 0;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Gothic 1 Remake — Lockpick Solver</h1>
+  <p class="subtitle">Shortest movement sequence to reach [4, 4, 4, 4, 4]. l: value +1, r: value &minus;1.</p>
+
+  <fieldset>
+    <legend>Starting position</legend>
+    <div class="pins" id="pins"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Plate connections</legend>
+    <table id="matrix"></table>
+    <p class="hint">Row = plate you move, column = plate that follows.</p>
+  </fieldset>
+
+  <button id="solve">Solve</button>
+
+  <fieldset>
+    <legend>Solution</legend>
+    <pre id="output"></pre>
+  </fieldset>
+</main>
+
+<script>
+'use strict';
+
+const SLOTS = 7;
+const PLATES = 5;
+const TARGET = [4, 4, 4, 4, 4];
+
+function positionToIndex(position) {
+  let index = 0;
+  for (const pin of position) index = index * SLOTS + (pin - 1);
+  return index;
+}
+
+function indexToPosition(index) {
+  const position = new Array(PLATES);
+  for (let i = PLATES - 1; i >= 0; i--) {
+    position[i] = index % SLOTS + 1;
+    index = Math.floor(index / SLOTS);
+  }
+  return position;
+}
+
+// change is +1 ('l') or -1 ('r'); returns null if any pin leaves [1, SLOTS]
+function applyMovement(position, plate, change, connections) {
+  const result = position.slice();
+  result[plate] += change;
+  for (const c of connections[plate]) {
+    result[c.plate] += change * (c.direction === 'same' ? 1 : -1);
+  }
+  return result.every(pin => pin >= 1 && pin <= SLOTS) ? result : null;
+}
+
+// BFS = Dijkstra with unit weights; returns a list of moves, [] if already
+// solved, or null if the target is unreachable.
+function solve(start, connections) {
+  const startIndex = positionToIndex(start);
+  const targetIndex = positionToIndex(TARGET);
+  const total = SLOTS ** PLATES;
+
+  const visited = new Uint8Array(total);
+  const prev = new Int32Array(total);
+  const prevMove = new Int8Array(total); // plate * 2 + (0 for 'l', 1 for 'r')
+  visited[startIndex] = 1;
+  const queue = [startIndex];
+
+  for (let head = 0; head < queue.length; head++) {
+    const v = queue[head];
+    if (v === targetIndex) break;
+    const position = indexToPosition(v);
+    for (let plate = 0; plate < PLATES; plate++) {
+      for (const change of [1, -1]) {
+        const nextPosition = applyMovement(position, plate, change, connections);
+        if (nextPosition === null) continue;
+        const next = positionToIndex(nextPosition);
+        if (!visited[next]) {
+          visited[next] = 1;
+          prev[next] = v;
+          prevMove[next] = plate * 2 + (change === 1 ? 0 : 1);
+          queue.push(next);
+        }
+      }
+    }
+  }
+
+  if (!visited[targetIndex]) return null;
+
+  const path = [];
+  for (let v = targetIndex; v !== startIndex; v = prev[v]) {
+    path.push({
+      plate: Math.floor(prevMove[v] / 2),
+      side: prevMove[v] % 2 === 0 ? 'l' : 'r',
+      position: indexToPosition(v),
+    });
+  }
+  path.reverse();
+  return path;
+}
+
+// --- UI ---
+
+const pinSelects = [];
+const pinsDiv = document.getElementById('pins');
+for (let plate = 0; plate < PLATES; plate++) {
+  const label = document.createElement('label');
+  label.append(`Plate ${plate + 1}`);
+  const select = document.createElement('select');
+  for (let value = 1; value <= SLOTS; value++) {
+    select.add(new Option(value, value));
+  }
+  select.value = TARGET[plate];
+  label.append(select);
+  pinsDiv.append(label);
+  pinSelects.push(select);
+}
+
+const matrixSelects = new Map(); // "src,dst" -> select
+const matrix = document.getElementById('matrix');
+const header = matrix.insertRow();
+header.insertCell().outerHTML = '<th>moves \\ affects</th>';
+for (let plate = 0; plate < PLATES; plate++) {
+  header.insertCell().outerHTML = `<th>${plate + 1}</th>`;
+}
+for (let src = 0; src < PLATES; src++) {
+  const row = matrix.insertRow();
+  row.insertCell().outerHTML = `<th>${src + 1}</th>`;
+  for (let dst = 0; dst < PLATES; dst++) {
+    const cell = row.insertCell();
+    if (src === dst) {
+      cell.textContent = '—';
+      cell.className = 'diag';
+      continue;
+    }
+    const select = document.createElement('select');
+    for (const option of ['none', 'same', 'opposite']) {
+      select.add(new Option(option, option));
+    }
+    cell.append(select);
+    matrixSelects.set(`${src},${dst}`, select);
+  }
+}
+
+function readConnections() {
+  const connections = Array.from({length: PLATES}, () => []);
+  for (const [key, select] of matrixSelects) {
+    if (select.value === 'none') continue;
+    const [src, dst] = key.split(',').map(Number);
+    connections[src].push({plate: dst, direction: select.value});
+  }
+  return connections;
+}
+
+const output = document.getElementById('output');
+document.getElementById('solve').addEventListener('click', () => {
+  const start = pinSelects.map(select => Number(select.value));
+  const path = solve(start, readConnections());
+
+  if (path === null) {
+    output.textContent = 'No solution: the target position is unreachable from the start.';
+    return;
+  }
+  if (path.length === 0) {
+    output.textContent = 'The lock is already open.';
+    return;
+  }
+  const lines = [`Solution in ${path.length} movements:`, ''];
+  path.forEach((move, i) => {
+    const side = move.side === 'l' ? 'left ' : 'right';
+    lines.push(
+      `${String(i + 1).padStart(3)}. plate ${move.plate + 1} ${side}  ->  [${move.position.join(', ')}]`
+    );
+  });
+  output.textContent = lines.join('\n');
+});
+</script>
+</body>
+</html>
