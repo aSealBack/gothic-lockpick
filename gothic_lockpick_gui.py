@@ -21,53 +21,48 @@ from gothic_lockpick import (
     run_dijkstra,
 )
 
-PLATE_NAMES = [str(i + 1) for i in range(PLATES)]
-DIRECTION_NAMES = [d.value for d in Direction]
 
+class ConnectionMatrix:
+    """Adjacency matrix of plate connections: cell (A, B) tells how moving
+    plate A affects plate B."""
 
-class ConnectionRow:
-    """One 'plate A moves plate B same/opposite' row with a remove button."""
+    NONE = 'none'
+    OPTIONS = [NONE, Direction.SAME.value, Direction.OPPOSITE.value]
 
-    def __init__(self, parent: ttk.Frame, on_change, on_remove) -> None:
-        self.frame = ttk.Frame(parent)
-        self.src = tk.StringVar(value=PLATE_NAMES[0])
-        self.dst = tk.StringVar(value=PLATE_NAMES[1])
-        self.direction = tk.StringVar(value=DIRECTION_NAMES[0])
+    def __init__(self, parent: ttk.Frame) -> None:
+        self.vars: dict[tuple[int, int], tk.StringVar] = {}
 
-        ttk.Label(self.frame, text='Plate').pack(side=tk.LEFT)
-        self._combo(self.src, on_change).pack(side=tk.LEFT, padx=(4, 4))
-        ttk.Label(self.frame, text='moves plate').pack(side=tk.LEFT)
-        self._combo(self.dst, on_change).pack(side=tk.LEFT, padx=(4, 4))
-        combo = ttk.Combobox(
-            self.frame, textvariable=self.direction,
-            values=DIRECTION_NAMES, width=9, state='readonly',
-        )
-        combo.bind('<<ComboboxSelected>>', lambda _e: on_change())
-        combo.pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(
-            self.frame, text='Remove', width=8,
-            command=lambda: on_remove(self),
-        ).pack(side=tk.LEFT)
-        self.frame.pack(anchor=tk.W, pady=2)
+        grid = ttk.Frame(parent)
+        grid.pack(anchor=tk.W)
+        ttk.Label(grid, text='moves \\ affects').grid(row=0, column=0, padx=(0, 6))
+        for plate in range(PLATES):
+            ttk.Label(grid, text=str(plate + 1)).grid(row=0, column=plate + 1)
+            ttk.Label(grid, text=str(plate + 1)).grid(row=plate + 1, column=0, sticky=tk.E, padx=(0, 6))
 
-    def _combo(self, var: tk.StringVar, on_change) -> ttk.Combobox:
-        combo = ttk.Combobox(
-            self.frame, textvariable=var,
-            values=PLATE_NAMES, width=3, state='readonly',
-        )
-        combo.bind('<<ComboboxSelected>>', lambda _e: on_change())
-        return combo
+        for src in range(PLATES):
+            for dst in range(PLATES):
+                if src == dst:
+                    ttk.Label(grid, text='—').grid(row=src + 1, column=dst + 1)
+                    continue
+                var = tk.StringVar(value=self.NONE)
+                combo = ttk.Combobox(
+                    grid, textvariable=var, values=self.OPTIONS,
+                    width=8, state='readonly',
+                )
+                combo.grid(row=src + 1, column=dst + 1, padx=1, pady=1)
+                self.vars[src, dst] = var
 
-    def value(self) -> tuple[int, int, Direction]:
-        """(source plate, dependent plate) as 0-based indices, plus direction."""
-        return (
-            int(self.src.get()) - 1,
-            int(self.dst.get()) - 1,
-            Direction(self.direction.get()),
-        )
+        ttk.Label(
+            parent,
+            text='Row = plate you move, column = plate that follows.',
+        ).pack(anchor=tk.W, pady=(6, 0))
 
-    def destroy(self) -> None:
-        self.frame.destroy()
+    def connections(self) -> list[list[Connection]]:
+        connections: list[list[Connection]] = [[] for _ in range(PLATES)]
+        for (src, dst), var in self.vars.items():
+            if var.get() != self.NONE:
+                connections[src].append(Connection(plate=dst, direction=Direction(var.get())))
+        return connections
 
 
 class App:
@@ -92,19 +87,16 @@ class App:
             var = tk.IntVar(value=TARGET[plate])
             spin = ttk.Spinbox(
                 column, from_=1, to=SLOTS, textvariable=var,
-                width=4, state='readonly', command=self.solve,
+                width=4, state='readonly',
             )
             spin.pack(padx=4)
             self.pins.append(var)
 
         conn_frame = ttk.LabelFrame(main, text='Plate connections', padding=8)
         conn_frame.pack(fill=tk.X, pady=(8, 0))
-        self.rows_frame = ttk.Frame(conn_frame)
-        self.rows_frame.pack(fill=tk.X)
-        self.rows: list[ConnectionRow] = []
-        ttk.Button(
-            conn_frame, text='Add connection', command=self.add_row,
-        ).pack(anchor=tk.W, pady=(4, 0))
+        self.matrix = ConnectionMatrix(conn_frame)
+
+        ttk.Button(main, text='Solve', command=self.solve).pack(fill=tk.X, pady=(8, 0))
 
         out_frame = ttk.LabelFrame(main, text='Solution', padding=8)
         out_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
@@ -113,27 +105,6 @@ class App:
             font=('Consolas', 10),
         )
         self.output.pack(fill=tk.BOTH, expand=True)
-
-        self.solve()
-
-    def add_row(self) -> None:
-        self.rows.append(ConnectionRow(self.rows_frame, self.solve, self.remove_row))
-        self.solve()
-
-    def remove_row(self, row: ConnectionRow) -> None:
-        self.rows.remove(row)
-        row.destroy()
-        self.solve()
-
-    def read_connections(self) -> list[list[Connection]]:
-        """Connections from the UI rows; raises ValueError on a self-connection."""
-        connections: list[list[Connection]] = [[] for _ in range(PLATES)]
-        for row in self.rows:
-            src, dst, direction = row.value()
-            if src == dst:
-                raise ValueError(f'Plate {src + 1} cannot be connected to itself')
-            connections[src].append(Connection(plate=dst, direction=direction))
-        return connections
 
     def get_edges(self, connections: list[list[Connection]]) -> list:
         key = tuple(
@@ -146,12 +117,7 @@ class App:
         return self.edges_cache[key]
 
     def solve(self) -> None:
-        try:
-            connections = self.read_connections()
-        except ValueError as e:
-            self.show(str(e))
-            return
-
+        connections = self.matrix.connections()
         start = tuple(var.get() for var in self.pins)
         edges = self.get_edges(connections)
         path = run_dijkstra(edges, position_to_index(start), position_to_index(TARGET))
